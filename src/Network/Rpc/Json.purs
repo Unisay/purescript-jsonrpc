@@ -3,6 +3,7 @@ module Network.Rpc.Json
   , Params
   , Request(..)
   , Response(..)
+  , AffjaxLoggingTransport(..)
   , AffjaxTransport(..)
   , class Transport
   , call
