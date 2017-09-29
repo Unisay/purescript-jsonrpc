@@ -1,8 +1,10 @@
 module Network.Rpc.Json
   ( Method
   , Params
-  , Request
+  , Error(..)
+  , Request(..)
   , Response(..)
+  , AffjaxLoggingTransport(..)
   , AffjaxTransport(..)
   , class Transport
   , call
@@ -10,6 +12,8 @@ module Network.Rpc.Json
 
 import Prelude
 import Control.Monad.Aff (Aff, error, throwError)
+import Control.Monad.Aff.Console (log)
+import Control.Monad.Eff.Console (CONSOLE)
 import Data.Argonaut.Core (Json, JObject, jsonEmptyObject)
 import Data.Argonaut.Decode (class DecodeJson, decodeJson, (.?), (.??))
 import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
@@ -18,14 +22,28 @@ import Data.Maybe (maybe)
 import Network.HTTP.Affjax (AJAX, URL, post)
 import Network.HTTP.StatusCode (StatusCode(..))
 
-newtype AffjaxTransport = AffjaxTransport URL
 
 class Transport c e | c -> e where
   call :: c -> Request -> Aff e (Response Json)
 
+newtype AffjaxTransport = AffjaxTransport URL
 instance affjaxTransport :: Transport AffjaxTransport (ajax :: AJAX | e) where
   call (AffjaxTransport url) req = do
     { status: (StatusCode statusCode), response: body } <- post url $ encodeJson req
+    when (statusCode /= 200) do
+      throwError $ error $ "JSON RPC call "
+        <> (show req)
+        <> " failed with HTTP status code = "
+        <> show statusCode
+    either (throwError <<< error) pure $ decodeJson body
+
+newtype AffjaxLoggingTransport = AffjaxLoggingTransport URL
+instance affjaxLoggingTransport :: Transport AffjaxLoggingTransport (ajax :: AJAX, console :: CONSOLE | e) where
+  call (AffjaxLoggingTransport url) req = do
+    let jsonRequest = encodeJson req
+    log $ ">>> " <> show jsonRequest
+    { status: (StatusCode statusCode), response: body } <- post url jsonRequest
+    log $ "<<< " <> show statusCode <> ": " <> show body
     when (statusCode /= 200) do
       throwError $ error $ "JSON RPC call "
         <> (show req)
@@ -63,7 +81,7 @@ instance functorResponse :: Functor Response where
   map _ (Response (Left e)) = Response $ Left e
 
 instance applyResponse :: Apply Response where
-  apply (Response (Right f)) (Response e) = Response (apply f e)
+  apply (Response f) (Response a) = Response (apply f a)
 
 instance applicativeResponse :: Applicative Response where
   pure = Response <<< pure
