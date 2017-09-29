@@ -10,7 +10,7 @@ module Network.Rpc.Json
 
 import Prelude
 import Control.Monad.Aff (Aff, error, throwError)
-import Data.Argonaut.Core (Json, jsonEmptyObject)
+import Data.Argonaut.Core (Json, JObject, jsonEmptyObject)
 import Data.Argonaut.Decode (class DecodeJson, decodeJson, (.?), (.??))
 import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
 import Data.Either (Either(..), either)
@@ -52,16 +52,32 @@ instance encodeRequest :: EncodeJson Request where
 instance showRequest :: Show Request where
   show = show <<< encodeJson
 
-data Response a = Result a
-                | Error Int String -- TODO: Error codes
+newtype Error = Error { code :: Int
+                      , message :: String
+                      }
+
+newtype Response a = Response (Either Error a)
+
+instance functorResponse :: Functor Response where
+  map f (Response (Right a)) = Response $ Right (f a)
+  map _ (Response (Left e)) = Response $ Left e
+
+instance applyResponse :: Apply Response where
+  apply (Response (Right f)) (Response e) = Response (apply f e)
+
+instance applicativeResponse :: Applicative Response where
+  pure = Response <<< pure
 
 instance decodeResponse :: DecodeJson r => DecodeJson (Response r) where
   decodeJson json = do
     obj <- decodeJson json
     res <- obj .?? "result"
-    maybe (decodeError obj) (Right <<< Result) res
-      where decodeError obj = do
-              err <- obj .? "error"
-              code <- err .? "code"
-              message <- err .? "message"
-              pure $ Error code message
+    maybe (decodeError obj) (pure <<< pure) res
+      where
+        decodeError :: JObject -> Either String (Response r)
+        decodeError o = do
+          err <- o .? "error"
+          code <- err .? "code"
+          message <- err .? "message"
+          let error = Error { code, message }
+          pure $ Response (Left error)
