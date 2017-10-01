@@ -2,6 +2,7 @@ module Network.Rpc.Json
   ( Method
   , Params
   , Error(..)
+  , error
   , Request(..)
   , Response(..)
   , AffjaxLoggingTransport(..)
@@ -12,32 +13,32 @@ module Network.Rpc.Json
 
 import Prelude
 
-import Control.Monad.Aff (Aff, error, throwError)
+import Control.Monad.Aff as A
 import Control.Monad.Aff.Console (log)
 import Control.Monad.Eff.Console (CONSOLE)
-import Data.Argonaut.Core (Json, JObject, jsonEmptyObject)
+import Data.Argonaut.Core (Json, jsonEmptyObject)
 import Data.Argonaut.Decode (class DecodeJson, decodeJson, (.?), (.??))
 import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
 import Data.Either (Either(..), either)
-import Data.Maybe (maybe)
+import Data.Maybe (Maybe, maybe)
 import Data.Newtype (class Newtype)
 import Network.HTTP.Affjax (AJAX, URL, post)
 import Network.HTTP.StatusCode (StatusCode(..))
 
 
 class Transport c e | c -> e where
-  call :: c -> Request -> Aff e (Response Json)
+  call :: c -> Request -> A.Aff e (Response Json)
 
 newtype AffjaxTransport = AffjaxTransport URL
 instance affjaxTransport :: Transport AffjaxTransport (ajax :: AJAX | e) where
   call (AffjaxTransport url) req = do
     { status: (StatusCode statusCode), response: body } <- post url $ encodeJson req
     when (statusCode /= 200) do
-      throwError $ error $ "JSON RPC call "
+      A.throwError $ A.error $ "JSON RPC call "
         <> (show req)
         <> " failed with HTTP status code = "
         <> show statusCode
-    either (throwError <<< error) pure $ decodeJson body
+    either (A.throwError <<< A.error) pure $ decodeJson body
 
 newtype AffjaxLoggingTransport = AffjaxLoggingTransport URL
 instance affjaxLoggingTransport :: Transport AffjaxLoggingTransport (ajax :: AJAX, console :: CONSOLE | e) where
@@ -47,11 +48,11 @@ instance affjaxLoggingTransport :: Transport AffjaxLoggingTransport (ajax :: AJA
     { status: (StatusCode statusCode), response: body } <- post url jsonRequest
     log $ "<<< " <> show statusCode <> ": " <> show body
     when (statusCode /= 200) do
-      throwError $ error $ "JSON RPC call "
+      A.throwError $ A.error $ "JSON RPC call "
         <> (show req)
         <> " failed with HTTP status code = "
         <> show statusCode
-    either (throwError <<< error) pure $ decodeJson body
+    either (A.throwError <<< A.error) pure $ decodeJson body
 
 type Method = String
 type Params = Array String
@@ -78,36 +79,60 @@ instance showRequest :: Show Request where
 
 newtype Error = Error { code :: Int
                       , message :: String
+                      , data :: Maybe Json
                       }
+
+error :: ∀ d.
+         EncodeJson d =>
+         Int -> String -> Maybe d ->
+         Error
+error c m d = Error { code: c
+                    , message: m
+                    , data: encodeJson <$> d
+                    }
 
 derive instance newtypeError :: Newtype Error _
 
 derive instance eqError :: Eq Error
 
-newtype Response a = Response (Either Error a)
+instance encodeJsonError :: EncodeJson Error where
+  encodeJson (Error e) = "code" := e.code
+                      ~> "message" := e.message
+                      ~> "data" := e.data
+                      ~> jsonEmptyObject
+
+instance decodeJsonError :: DecodeJson Error where
+  decodeJson json = do
+    obj  <- decodeJson json
+    code <- obj .? "code"
+    msg  <- obj .? "message"
+    dta  <- obj .?? "data"
+    pure $ Error { code: code, message: msg, data: dta }
+
+data Response a = Response Int (Either Error a)
 
 derive instance eqResponse :: Eq a => Eq (Response a)
 
 instance functorResponse :: Functor Response where
-  map f (Response (Right a)) = Response $ Right (f a)
-  map _ (Response (Left e)) = Response $ Left e
+  map f (Response id (Right a)) = Response id $ Right (f a)
+  map _ (Response id (Left e)) = Response id $ Left e
 
-instance applyResponse :: Apply Response where
-  apply (Response f) (Response a) = Response (apply f a)
+instance encodeResponse :: EncodeJson r => EncodeJson (Response r) where
+  encodeJson (Response id (Right r)) =
+      "jsonrpc" := "2.0"
+   ~> "id" := id
+   ~> "result" := r
+   ~> jsonEmptyObject
+  encodeJson (Response id (Left  e)) =
+       "jsonrpc" := "2.0"
+    ~> "id" := id
+    ~> "error" := e
+    ~> jsonEmptyObject
 
-instance applicativeResponse :: Applicative Response where
-  pure = Response <<< pure
-
-instance decodeResponse :: DecodeJson r => DecodeJson (Response r) where
+instance decodeJsonResponse :: DecodeJson r => DecodeJson (Response r) where
   decodeJson json = do
     obj <- decodeJson json
+    id <- obj .? "id"
     res <- obj .?? "result"
-    maybe (decodeError obj) (pure <<< pure) res
-      where
-        decodeError :: JObject -> Either String (Response r)
-        decodeError o = do
-          err <- o .? "error"
-          code <- err .? "code"
-          message <- err .? "message"
-          let error = Error { code, message }
-          pure $ Response (Left error)
+    err <- maybe (decodeJson json) (pure <<< pure) res
+    pure $ Response id err
