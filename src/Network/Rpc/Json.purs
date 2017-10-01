@@ -13,12 +13,13 @@ module Network.Rpc.Json
 
 import Prelude
 
+import Control.Alt ((<|>))
 import Control.Monad.Aff as A
 import Control.Monad.Aff.Console (log)
 import Control.Monad.Eff.Console (CONSOLE)
-import Data.Argonaut.Core (Json, jsonEmptyObject)
+import Data.Argonaut.Core (Json, jsonEmptyObject, stringify)
 import Data.Argonaut.Decode (class DecodeJson, decodeJson, (.?), (.??))
-import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
+import Data.Argonaut.Encode (class EncodeJson, assoc, encodeJson, extend, (:=), (~>))
 import Data.Either (Either(..), either)
 import Data.Maybe (Maybe, maybe)
 import Data.Newtype (class Newtype)
@@ -96,10 +97,12 @@ derive instance newtypeError :: Newtype Error _
 derive instance eqError :: Eq Error
 
 instance encodeJsonError :: EncodeJson Error where
-  encodeJson (Error e) = "code" := e.code
-                      ~> "message" := e.message
-                      ~> "data" := e.data
-                      ~> jsonEmptyObject
+  encodeJson (Error e) =
+    let cd = "code" := e.code
+        ms =  "message" := e.message
+        add = assoc "data" >>> flip extend jsonEmptyObject
+        tl = maybe jsonEmptyObject add e.data
+    in cd ~> ms ~> tl
 
 instance decodeJsonError :: DecodeJson Error where
   decodeJson json = do
@@ -117,7 +120,20 @@ instance functorResponse :: Functor Response where
   map f (Response id (Right a)) = Response id $ Right (f a)
   map _ (Response id (Left e)) = Response id $ Left e
 
-instance encodeResponse :: EncodeJson r => EncodeJson (Response r) where
+instance showResponse :: Show a => Show (Response a) where
+  show (Response id (Left (Error e))) =
+    "Response { id = " <> show id
+          <> ", error code = " <> show e.code
+          <> ", error message = " <> show e.message
+          <> ", error data = " <> show (stringify <$> e.data)
+          <> "}"
+  show (Response id (Right r)) =
+    "Response { id = " <> show id
+          <> ", result = " <> show r
+          <> "}"
+
+instance encodeResponse :: EncodeJson r =>
+                           EncodeJson (Response r) where
   encodeJson (Response id (Right r)) =
       "jsonrpc" := "2.0"
    ~> "id" := id
@@ -129,10 +145,11 @@ instance encodeResponse :: EncodeJson r => EncodeJson (Response r) where
     ~> "error" := e
     ~> jsonEmptyObject
 
-instance decodeJsonResponse :: DecodeJson r => DecodeJson (Response r) where
+instance decodeJsonResponse :: DecodeJson r =>
+                               DecodeJson (Response r) where
   decodeJson json = do
-    obj <- decodeJson json
-    id <- obj .? "id"
-    res <- obj .?? "result"
-    err <- maybe (decodeJson json) (pure <<< pure) res
-    pure $ Response id err
+    o <- decodeJson json
+    id <- o .? "id"
+    it <- Right <$> (o .? "result" >>= decodeJson)
+      <|> Left  <$> (o .? "error"  >>= decodeJson)
+    pure $ Response id it
