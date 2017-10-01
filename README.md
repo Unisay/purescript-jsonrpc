@@ -1,4 +1,7 @@
 # purescript-jsonrpc
+
+[![Pursuit](https://pursuit.purescript.org/packages/purescript-jsonrpc/badge)](https://pursuit.purescript.org/packages/purescript-jsonrpc)
+
 [JSON RPC v2.0](http://www.jsonrpc.org/specification) client
 
 [Wikipedia](https://en.wikipedia.org/wiki/JSON-RPC):
