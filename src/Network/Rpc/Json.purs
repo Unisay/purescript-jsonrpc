@@ -11,6 +11,7 @@ module Network.Rpc.Json
   ) where
 
 import Prelude
+
 import Control.Monad.Aff (Aff, error, throwError)
 import Control.Monad.Aff.Console (log)
 import Control.Monad.Eff.Console (CONSOLE)
@@ -19,6 +20,7 @@ import Data.Argonaut.Decode (class DecodeJson, decodeJson, (.?), (.??))
 import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
 import Data.Either (Either(..), either)
 import Data.Maybe (maybe)
+import Data.Newtype (class Newtype)
 import Network.HTTP.Affjax (AJAX, URL, post)
 import Network.HTTP.StatusCode (StatusCode(..))
 
@@ -59,6 +61,10 @@ newtype Request = Request { id :: Int
                           , params :: Params
                           }
 
+derive instance newtypeRequest :: Newtype Request _
+
+derive instance eqRequest :: Eq Request
+
 instance encodeRequest :: EncodeJson Request where
   encodeJson (Request req) =
        "id" := req.id
@@ -74,7 +80,13 @@ newtype Error = Error { code :: Int
                       , message :: String
                       }
 
+derive instance newtypeError :: Newtype Error _
+
+derive instance eqError :: Eq Error
+
 newtype Response a = Response (Either Error a)
+
+derive instance eqResponse :: Eq a => Eq (Response a)
 
 instance functorResponse :: Functor Response where
   map f (Response (Right a)) = Response $ Right (f a)
